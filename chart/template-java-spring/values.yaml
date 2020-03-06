@@ -3,8 +3,8 @@
 # Declare variables to be passed into your templates.
 global: {}
 
-cloudantBinding: ""
-databaseName: ""
+cloudantBinding: "binding-mooc-two-iks-cloudant"
+databaseName: "inventory-dev-mc"
 
 replicaCount: 1
 
