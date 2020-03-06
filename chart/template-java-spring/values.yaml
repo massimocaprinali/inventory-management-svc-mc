@@ -3,8 +3,10 @@
 # Declare variables to be passed into your templates.
 global: {}
 
+cloudantBinding: ""
+databaseName: ""
+
 replicaCount: 1
-logLevel: "INFO"
 
 image:
   repository: replace
@@ -32,9 +34,3 @@ ingress:
   path: "/"
 
 #  tlsSecretName: ""
-
-cloudant:
-  binding:
-    name: "binding-mooc-two-iks-cloudant"
-  database:
-    name: "inventory-dev-mc"

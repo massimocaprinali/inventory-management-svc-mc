@@ -95,8 +95,6 @@ apply from:   'gradle/build-githooks.gradle'
 // apply from:   'gradle/build-liberty.gradle'
 apply from:   'gradle/build-pact-provider.gradle'
 
-apply from:   'gradle/build-cloudant.gradle'
-
 apply plugin: "org.sonarqube"
 
 ext['junit-jupiter.version']   = '${junitVersion}'
@@ -111,3 +109,5 @@ task copyJarToServerJar(type: Copy) {
     }
     into 'build/libs'
 }
+
+apply from: 'gradle/build-cloudant.gradle'

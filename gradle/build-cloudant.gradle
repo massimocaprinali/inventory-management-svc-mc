@@ -4,4 +4,3 @@ dependencies {
     compile group: 'javax.xml.bind', name: 'jaxb-api', version: '2.1'
     compile group: 'joda-time', name: 'joda-time', version: '2.10.3'
 }
-
