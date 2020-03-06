@@ -116,6 +116,7 @@ spec:
         - secretRef:
             name: gitops-cd-secret
             optional: true
+            namescape: ${namespace}
 """
 ) {
     node(buildLabel) {
