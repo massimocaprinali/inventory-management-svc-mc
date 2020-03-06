@@ -10,7 +10,9 @@
  * to run in both Kubernetes and OpenShift environments.
  */
 
-def buildAgentName(String jobName, String buildNumber) {
+def buildAgentName(String jobNameWithNamespace, String buildNumber, String namespace) {
+    def jobName = removeNamespaceFromJobName(jobNameWithNamespace, namespace);
+
     if (jobName.length() > 55) {
         jobName = jobName.substring(0, 55);
     }
@@ -18,7 +20,11 @@ def buildAgentName(String jobName, String buildNumber) {
     return "a.${jobName}${buildNumber}".replace('_', '-').replace('/', '-').replace('-.', '.');
 }
 
-def buildLabel = buildAgentName(env.JOB_NAME, env.BUILD_NUMBER);
+def removeNamespaceFromJobName(String jobName, String namespace) {
+    return jobName.replaceAll(namespace + "-", "");
+}
+
+def buildLabel = buildAgentName(env.JOB_NAME, env.BUILD_NUMBER, env.NAMESPACE);
 def namespace = env.NAMESPACE ?: "dev"
 def cloudName = env.CLOUD_NAME == "openshift" ? "openshift" : "kubernetes"
 def workingDir = "/home/jenkins/agent"
@@ -85,12 +91,9 @@ spec:
         - secretRef:
             name: artifactory-access
             optional: true
-        - secretRef:
-            name: gitops-cd-secret
-            optional: true
       env:
         - name: CHART_NAME
-          value: template-java-spring
+          value: base
         - name: CHART_ROOT
           value: chart
         - name: TMP_DIR
@@ -101,6 +104,18 @@ spec:
           value: ${namespace}
         - name: BUILD_NUMBER
           value: ${env.BUILD_NUMBER}
+    - name: trigger-cd
+      image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
+      tty: true
+      command: ["/bin/bash"]
+      workingDir: ${workingDir}
+      env:
+        - name: HOME
+          value: /home/devops
+      envFrom:
+        - secretRef:
+            name: gitops-cd-secret
+            optional: true
 """
 ) {
     node(buildLabel) {
@@ -163,7 +178,9 @@ spec:
             stage('Deploy to DEV env') {
                 sh '''#!/bin/bash
                     . ./env-config
-                    
+
+                    set +x
+
                     if [[ "${CHART_NAME}" != "${IMAGE_NAME}" ]]; then
                       cp -R "${CHART_ROOT}/${CHART_NAME}" "${CHART_ROOT}/${IMAGE_NAME}"
                       cat "${CHART_ROOT}/${CHART_NAME}/Chart.yaml" | \
@@ -186,17 +203,23 @@ spec:
                     
                     echo "CHECKING CHART (lint)"
                     helm lint ${CHART_PATH}
-                    if [[ $? -ne 0 ]]; then
-                      exit 1
-                    fi
-                    
+
                     IMAGE_REPOSITORY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}"
                     PIPELINE_IMAGE_URL="${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION}"
-                    
+
+                    INGRESS_ENABLED="true"
+                    ROUTE_ENABLED="false"
+                    if [[ "${CLUSTER_TYPE}" == "openshift" ]]; then
+                        INGRESS_ENABLED="false"
+                        ROUTE_ENABLED="true"
+                    fi
+
                     # Update helm chart with repository and tag values
                     cat ${CHART_PATH}/values.yaml | \
                         yq w - image.repository "${IMAGE_REPOSITORY}" | \
-                        yq w - image.tag "${IMAGE_VERSION}" > ./values.yaml.tmp
+                        yq w - image.tag "${IMAGE_VERSION}" | \
+                        yq w - ingress.enabled "${INGRESS_ENABLED}" | \
+                        yq w - route.enabled "${ROUTE_ENABLED}" > ./values.yaml.tmp
                     cp ./values.yaml.tmp ${CHART_PATH}/values.yaml
                     cat ${CHART_PATH}/values.yaml
 
@@ -211,29 +234,31 @@ spec:
                     cat ./release.yaml
                     
                     echo -e "Deploying into: ${CLUSTER_NAME}/${ENVIRONMENT_NAME}."
-                    kubectl apply -n ${ENVIRONMENT_NAME} -f ./release.yaml
-
-                    # ${SCRIPT_ROOT}/deploy-checkstatus.sh ${ENVIRONMENT_NAME} ${IMAGE_NAME} ${IMAGE_REPOSITORY} ${IMAGE_VERSION}
+                    kubectl apply -n ${ENVIRONMENT_NAME} -f ./release.yaml --validate=false
                 '''
             }
             stage('Health Check') {
                 sh '''#!/bin/bash
                     . ./env-config
-                    
-                    INGRESS_NAME="${IMAGE_NAME}"
-                    INGRESS_HOST=$(kubectl get ingress/${INGRESS_NAME} --namespace ${ENVIRONMENT_NAME} --output=jsonpath='{ .spec.rules[0].host }')
-                    PORT='80'
+
+                    if [[ "${CLUSTER_TYPE}" == "openshift" ]]; then
+                        ROUTE_HOST=$(kubectl get route/${IMAGE_NAME} --namespace ${ENVIRONMENT_NAME} --output=jsonpath='{ .spec.host }')
+                        URL="https://${ROUTE_HOST}"
+                    else
+                        INGRESS_HOST=$(kubectl get ingress/${IMAGE_NAME} --namespace ${ENVIRONMENT_NAME} --output=jsonpath='{ .spec.rules[0].host }')
+                        URL="http://${INGRESS_HOST}"
+                    fi
 
                     # sleep for 10 seconds to allow enough time for the server to start
                     sleep 30
 
-                    if [ $(curl -sL -w "%{http_code}\\n" "http://${INGRESS_HOST}:${PORT}/health" -o /dev/null --connect-timeout 3 --max-time 5 --retry 3 --retry-max-time 30) == "200" ]; then
-                        echo "Successfully reached health endpoint: http://${INGRESS_HOST}:${PORT}/health"
-                    echo "====================================================================="
-                        else
-                    echo "Could not reach health endpoint: http://${INGRESS_HOST}:${PORT}/health"
-                        exit 1;
-                    fi;
+                    if [ $(curl -sL -w "%{http_code}\\n" "${URL}/health" -o /dev/null --connect-timeout 3 --max-time 5 --retry 3 --retry-max-time 30) == "200" ]; then
+                        echo "Successfully reached health endpoint: ${URL}/health"
+                        echo "====================================================================="
+                    else
+                        echo "Could not reach health endpoint: ${URL}/health"
+                        exit 1
+                    fi
 
                 '''
             }
@@ -292,48 +317,50 @@ spec:
 
             '''
             }
+        }
+        container(name: 'trigger-cd', shell: '/bin/bash') {
             stage('Trigger CD Pipeline') {
                 sh '''#!/bin/bash
-                    if [[ -z "${GITOPS_CD_URL}" ]]; then
+                    if [[ -z "${url}" ]]; then
+                        echo "'url' not set. Not triggering CD pipeline"
                         exit 0
                     fi
-                    if [[ -z "${GITOPS_CD_BRANCH}" ]]; then
-                        GITOPS_CD_BRANCH="master"
+                    if [[ -z "${host}" ]]; then
+                        echo "'host' not set. Not triggering CD pipeline"
+                        exit 0
                     fi
-                    
+
+                    if [[ -z "${branch}" ]]; then
+                        branch="master"
+                    fi
+
                     . ./env-config
-                    
+
                     if [[ -n "${BUILD_NUMBER}" ]]; then
                       IMAGE_BUILD_VERSION="${IMAGE_VERSION}-${BUILD_NUMBER}"
                     fi
-                    
-                    # This email is not used and it not valid, you can ignore but git requires it
+
+                    # This email is not used and is not valid, you can ignore but git requires it
                     git config --global user.email "jenkins@ibmcloud.com"
                     git config --global user.name "Jenkins Pipeline"
-                    
-                    git clone -b ${GITOPS_CD_BRANCH} ${GITOPS_CD_URL} gitops_cd
+
+                    GIT_URL="https://${username}:${password}@${host}/${org}/${repo}"
+
+                    git clone -b ${branch} ${GIT_URL} gitops_cd
                     cd gitops_cd
-                    
+
                     echo "Requirements before update"
                     cat "./${IMAGE_NAME}/requirements.yaml"
-                    
-                    # Read the helm repo
-                    HELM_REPO=$(yq r ./${IMAGE_NAME}/requirements.yaml 'dependencies[0].repository')
-                    
-                    # Write the updated requirements.yaml
-                    echo "dependencies:" > ./requirements.yaml.tmp
-                    echo "  - name: ${IMAGE_NAME}" >> ./requirements.yaml.tmp
-                    echo "    version: ${IMAGE_BUILD_VERSION}" >> ./requirements.yaml.tmp
-                    echo "    repository: ${HELM_REPO}" >> ./requirements.yaml.tmp
-                    
-                    cp ./requirements.yaml.tmp "./${IMAGE_NAME}/requirements.yaml"
-                    
+
+                    npm i -g @garage-catalyst/ibm-garage-cloud-cli
+                    igc yq w ./${IMAGE_NAME}/requirements.yaml "dependencies[?(@.name == '${IMAGE_NAME}')].version" ${IMAGE_BUILD_VERSION} -i
+
                     echo "Requirements after update"
                     cat "./${IMAGE_NAME}/requirements.yaml"
-                    
+
                     git add -u
                     git commit -m "Updates ${IMAGE_NAME} to ${IMAGE_BUILD_VERSION}"
-                    git push
+                    git push -v
                 '''
             }
         }
