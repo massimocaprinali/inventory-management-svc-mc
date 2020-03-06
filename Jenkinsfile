@@ -93,7 +93,7 @@ spec:
             optional: true
       env:
         - name: CHART_NAME
-          value: base
+          value: template-java-spring
         - name: CHART_ROOT
           value: chart
         - name: TMP_DIR
