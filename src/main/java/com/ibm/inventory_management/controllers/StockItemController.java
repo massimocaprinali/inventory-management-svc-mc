@@ -18,7 +18,7 @@ public class StockItemController {
     }
 
     @GetMapping(path = "/stock-items", produces = "application/json")
-    public List<StockItem> listStockItems() {
+    public List<StockItem> listStockItems() throws Exception {
         return this.service.listStockItems();
     }
 }
