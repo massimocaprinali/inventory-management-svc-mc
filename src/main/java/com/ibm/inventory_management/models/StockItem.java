@@ -3,6 +3,12 @@ package com.ibm.inventory_management.models;
 import java.io.Serializable;
 
 public class StockItem implements Serializable {
+    /**
+     *
+     */
+    private static final long serialVersionUID = 288278913355775651L;
+
+    
     private String name;
     private String id = null;
     private int stock = 0;

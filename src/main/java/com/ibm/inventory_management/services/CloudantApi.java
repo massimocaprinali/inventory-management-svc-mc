@@ -5,10 +5,10 @@ import java.net.URL;
 
 import com.cloudant.client.api.ClientBuilder;
 import com.cloudant.client.api.CloudantClient;
+import com.ibm.inventory_management.config.CloudantConfig;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
-
-import com.ibm.inventory_management.config.CloudantConfig;
 
 @Component
 public class CloudantApi {
